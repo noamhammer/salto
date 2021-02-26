@@ -128,6 +128,7 @@ const mockCreateRemoteMap = async <T, K extends string = string>(
     flush: (): Promise<void> => Promise.resolve(undefined),
     revert: (): Promise<void> => Promise.resolve(undefined),
     close: (): Promise<void> => Promise.resolve(undefined),
+    isEmpty: async (): Promise<boolean> => _.isEmpty(data),
   }
 }
 

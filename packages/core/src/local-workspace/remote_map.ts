@@ -18,9 +18,11 @@ import { promisify } from 'util'
 import LRU from 'lru-cache'
 import { remoteMap } from '@salto-io/workspace'
 import { collections } from '@salto-io/lowerdash'
+import { logger } from '@salto-io/logging'
 
 const { asynciterable } = collections
 const { awu } = asynciterable
+const log = logger(module)
 const NAMESPACE_SEPARATOR = '::'
 const TEMP_PREFIX = '~TEMP~'
 
@@ -85,8 +87,9 @@ AsyncIterable<remoteMap.RemoteMapEntry<string>> {
 
 const dbConnections: Record<string, rocksdb> = {}
 
-export const createRemoteMapCreator = (location: string):
-remoteMap.RemoteMapCreator => async <T, K extends string = string>(
+export const createRemoteMapCreator = (
+  location: string, notifyFlush?: remoteMap.FlushNotification
+): remoteMap.RemoteMapCreator => async <T, K extends string = string>(
   { namespace, batchInterval = 1000, LRUSize = 500, serialize, deserialize }:
   remoteMap.CreateRemoteMapParams<T>
 ): Promise<remoteMap.RemoteMap<T, K>> => {
@@ -171,13 +174,23 @@ remoteMap.RemoteMapCreator => async <T, K extends string = string>(
       .map(async entry => deserialize(entry.value))
   }
 
-  const entriesImpl = (iterationOpts?: remoteMap.IterationOpts):
+  const entriesImpl = (iterationOpts?: remoteMap.IterationOpts, persistent = true, temp = true):
   AsyncIterable<remoteMap.RemoteMapEntry<T, K>> => {
     const opts = { ...(iterationOpts ?? {}), keys: true, values: true }
-    const tempIter = createTempIterator(opts)
-    const iter = createPersistentIterator(opts)
-    return awu(aggregatedIterable([tempIter, iter]))
+    const iters = [
+      ...(temp ? [createTempIterator(opts)] : []),
+      ...(persistent ? [createPersistentIterator(opts)] : []),
+    ]
+    return awu(aggregatedIterable(iters))
       .map(async entry => ({ key: entry.key as K, value: await deserialize(entry.value) }))
+  }
+
+  const keysImpl = (iterationOpts?: remoteMap.IterationOpts): AsyncIterable<K> => {
+    const opts = { ...(iterationOpts ?? {}), keys: true, values: false }
+    const tempKeyIter = createTempIterator(opts)
+    const keyIter = createPersistentIterator(opts)
+    return awu(aggregatedIterable([tempKeyIter, keyIter]))
+      .map(async (entry: remoteMap.RemoteMapEntry<string>) => entry.key as K)
   }
 
   const clearImpl = (prefix: string, suffix?: string): Promise<void> =>
@@ -234,15 +247,14 @@ remoteMap.RemoteMapCreator => async <T, K extends string = string>(
       await promisify(db.put.bind(db))(keyToTempDBKey(key), serialize(element))
     },
     setAll: setAllImpl,
-    keys: (iterationOpts?: remoteMap.IterationOpts) => {
-      const opts = { ...(iterationOpts ?? {}), keys: true, values: false }
-      const tempKeyIter = createTempIterator(opts)
-      const keyIter = createPersistentIterator(opts)
-      return awu(aggregatedIterable([tempKeyIter, keyIter]))
-        .map(async (entry: remoteMap.RemoteMapEntry<string>) => entry.key as K)
-    },
+    keys: keysImpl,
     flush: async () => {
-      await setAllImpl(entriesImpl(), false)
+      log.debug(`Flushing remote map. namespace: ${namespace}`)
+      await setAllImpl(entriesImpl(undefined, false, true), false)
+      const tempKeys = await awu(entriesImpl(undefined, false, true))
+        .map(entry => entry.key)
+        .toArray()
+      await notifyFlush?.(namespace, tempKeys)
       await clearImpl(TEMP_PREFIX.concat(namespace).concat(NAMESPACE_SEPARATOR))
     },
     revert: async () => {
@@ -275,6 +287,12 @@ remoteMap.RemoteMapCreator => async <T, K extends string = string>(
         return val !== undefined
       }
       return hasKeyImpl(keyToTempDBKey(key)) || hasKeyImpl(keyToDBKey(key))
+    },
+    isEmpty: async (): Promise<boolean> => {
+      if (cache.length > 0) {
+        return false
+      }
+      return awu(keysImpl({ first: 1 })).isEmpty()
     },
   }
 }

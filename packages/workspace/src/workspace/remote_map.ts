@@ -34,6 +34,11 @@ export interface CreateRemoteMapParams<T> {
   deserialize: (s: string) => Promise<T>
 }
 
+export type FlushNotification<K extends string = string> = (
+  namespace: string,
+  keys: K[],
+) => Promise<void>
+
 export type RemoteMap<T, K extends string = string> = {
   delete(key: K): Promise<void>
   get(key: K): Promise<T | undefined>
@@ -47,6 +52,7 @@ export type RemoteMap<T, K extends string = string> = {
   revert: () => Promise<void>
   clear(): Promise<void>
   close(): Promise<void>
+  isEmpty(): Promise<boolean>
 }
 
 export type RemoteMapCreator = <T, K extends string = string>(
@@ -111,6 +117,10 @@ export class InMemoryRemoteMap<T, K extends string = string> implements RemoteMa
   // eslint-disable-next-line class-methods-use-this
   async close(): Promise<void> {
     return Promise.resolve(undefined)
+  }
+
+  async isEmpty(): Promise<boolean> {
+    return this.data.size === 0
   }
 
   [Symbol.toStringTag]: '[InMemoryRemoteMap]'

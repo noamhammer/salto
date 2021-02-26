@@ -124,6 +124,7 @@ export const fetchCommand = async (
     fetchProgress,
     services,
   )
+  await workspace.flush()
   if (fetchResult.success === false) {
     errorOutputLine(formatFatalFetchError(fetchResult.mergeErrors), output)
     return CliExitCode.AppError
